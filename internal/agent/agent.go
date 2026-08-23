@@ -86,8 +86,13 @@ func (a *Agent) setupLogger() error {
 }
 
 func (a *Agent) setupMux() error {
+	addr, err := net.ResolveTCPAddr("tcp", a.Config.BindAddr)
+	if err != nil {
+		return err
+	}
 	rpcAddr := fmt.Sprintf(
-		":%d",
+		"%s:%d",
+		addr.IP.String(),
 		a.Config.RPCPort,
 	)
 	ln, err := net.Listen("tcp", rpcAddr)
@@ -114,7 +119,11 @@ func (a *Agent) setupLog() error {
 	)
 	logConfig.Raft.LocalID = raft.ServerID(a.Config.NodeName)
 	logConfig.Raft.Bootstrap = a.Config.Bootstrap
-	var err error
+	rpcAddr, err := a.Config.RPCAddr()
+	if err != nil {
+		return err
+	}
+	logConfig.Raft.BindAddr = rpcAddr
 	a.log, err = log.NewDistributedLog(
 		a.Config.DataDir,
 		logConfig,
@@ -129,23 +138,26 @@ func (a *Agent) setupLog() error {
 }
 
 func (a *Agent) setupServer() error {
-	authorizer, err := auth.New(
-		a.Config.ACLModelFile,
-		a.Config.ACLPolicyFile,
-	)
-	if err != nil {
-		return err
-	}
 	serverConfig := &server.Config{
-		CommitLog:  a.log,
-		Authorizer: authorizer,
+		CommitLog:   a.log,
 		GetServerer: a.log,
+	}
+	if a.Config.ACLModelFile != "" || a.Config.ACLPolicyFile != "" {
+		authorizer, err := auth.New(
+			a.Config.ACLModelFile,
+			a.Config.ACLPolicyFile,
+		)
+		if err != nil {
+			return err
+		}
+		serverConfig.Authorizer = authorizer
 	}
 	var opts []grpc.ServerOption
 	if a.Config.ServerTLSConfig != nil {
 		creds := credentials.NewTLS(a.Config.ServerTLSConfig)
 		opts = append(opts, grpc.Creds(creds))
 	}
+	var err error
 	a.server, err = server.NewGRPCServer(serverConfig, opts...)
 	if err != nil {
 		return err
@@ -156,7 +168,7 @@ func (a *Agent) setupServer() error {
 			_ = a.Shutdown()
 		}
 	}()
-	return err
+	return nil
 }
 
 func (a *Agent) setupMembership() error {
